@@ -50,6 +50,27 @@ if (!reduceMotion) {
   $$('.reveal').forEach(el => { revealIn.observe(el); revealOut.observe(el); });
 }
 
+/* ---------------- Video sound ---------------- */
+$$('.poster__sound').forEach(btn => {
+  const video = $('.poster__video', btn.closest('.poster'));
+  if (!video) return;
+  const icon = muted => muted
+    ? '<svg class="poster__sound-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Z"/><path d="m16 9 4 6M20 9l-4 6"/></svg>'
+    : '<svg class="poster__sound-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Z"/><path d="M16 10c1 1 1 3 0 4M18 8c2 2 2 6 0 8"/></svg>';
+  const sync = () => {
+    const muted = video.muted;
+    btn.setAttribute('aria-pressed', String(!muted));
+    btn.setAttribute('aria-label', muted ? 'تشغيل الصوت' : 'كتم الصوت');
+    btn.innerHTML = icon(muted);
+  };
+  btn.addEventListener('click', async () => {
+    video.muted = !video.muted;
+    if (!video.muted) await video.play().catch(() => { video.muted = true; });
+    sync();
+  });
+  sync();
+});
+
 /* ---------------- Flip cards ---------------- */
 // Flip cards: hover flips them on desktop; tapping toggles them on touch screens
 const canHover = matchMedia('(hover: hover)').matches;
@@ -70,7 +91,7 @@ function onScroll() {
   const vh = innerHeight;
   const p = scrollProgress();
   bar.style.transform = `scaleX(${p})`;
-  counter.textContent = String(Math.round(p * 999)).padStart(3, '0');
+  if (counter) counter.textContent = String(Math.round(p * 999)).padStart(3, '0');
 
   if (!reduceMotion) {
     parallax.forEach(el => {
@@ -332,8 +353,8 @@ if (!reduceMotion) { addEventListener('scroll', () => requestAnimationFrame(srRu
 
 /* ---------------- Scroll gates ----------------
    At a few blocks the page stops: scrolling drives the reveal of that block's text
-   (one paragraph after another) instead of moving the page, and only once everything
-   has appeared does the page carry on. Scrolling up at the start releases it. */
+   (one paragraph after another) instead of moving the page. The same sequence runs
+   in reverse when scrolling back up, restoring each block to its starting state. */
 const NAV_OFF = 76;
 const absTop = el => { let y = 0; for (let n = el; n; n = n.offsetParent) y += n.offsetTop; return y; };
 const GATES = [];
@@ -362,7 +383,7 @@ const strip = $('.filmstrip'), track = strip && $('.filmstrip__track', strip);
 if (strip && track) {
   strip.classList.add('is-gated');
   GATES.push({
-    el: strip, anchor: 'center', p: 0, done: false, len: 2400,
+    el: strip, anchor: 'center', p: 0, target: 0, done: false, smooth: true, len: 2400,
     apply(p) { const max = Math.max(0, track.scrollWidth - strip.clientWidth); track.style.transform = `translate3d(${(p * max).toFixed(1)}px,0,0)`; },
   });
 }
@@ -378,22 +399,52 @@ let gLocked = null, gLastY = scrollY;
 const gUnlock = () => { gLocked = null; window.__lenis && window.__lenis.start(); gLastY = scrollY; };
 const gLock = g => {
   gLocked = g;
+  if (g.smooth) g.target = g.p;
   const L = window.__lenis;
   if (L) { L.scrollTo(g.y, { immediate: true, force: true }); L.stop(); }
   window.scrollTo(0, g.y);
   gLastY = g.y;
   g.apply(g.p);
 };
+let gRaf = 0;
+const gFinish = g => {
+  if (g.p >= 1) { g.done = true; gUnlock(); }
+  else if (g.p <= 0) { g.done = false; gUnlock(); }
+};
+const gAnimate = () => {
+  gRaf = 0;
+  const g = gLocked;
+  if (!g || !g.smooth) return;
+  const gap = g.target - g.p;
+  if (Math.abs(gap) < .001) {
+    g.p = g.target; g.apply(g.p); gFinish(g);
+    return;
+  }
+  g.p += gap * .16;
+  g.apply(g.p);
+  gRaf = requestAnimationFrame(gAnimate);
+};
 const gCheck = () => {
   const y = scrollY, prev = gLastY; gLastY = y;
   if (gLocked || window.__navJump) return;
-  for (const g of GATES) if (!g.done && prev < g.y && y >= g.y) { gLock(g); break; }
+  for (const g of GATES) {
+    const enteringForward = !g.done && prev < g.y && y >= g.y;
+    // A small buffer keeps the reverse pass reliable with smooth scrolling,
+    // including the horizontal cinema filmstrip.
+    const enteringBackward = g.done && prev > g.y + 3 && y <= g.y + 3;
+    if (enteringForward || enteringBackward) { gLock(g); break; }
+  }
 };
 const gStep = d => {
   const g = gLocked; if (!g) return false;
+  if (g.smooth) {
+    g.target = clamp(g.target + d / g.len);
+    if (!gRaf) gRaf = requestAnimationFrame(gAnimate);
+    return true;
+  }
   g.p = clamp(g.p + d / g.len); g.apply(g.p);
   if (g.p >= 1 && d > 0) { g.done = true; gUnlock(); }
-  else if (g.p <= 0 && d < 0) gUnlock();
+  else if (g.p <= 0 && d < 0) { g.done = false; gUnlock(); }
   return true;
 };
 if (!reduceMotion && GATES.length) {
